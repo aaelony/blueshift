@@ -23,11 +23,20 @@ Blueshift requires minimal configuration. It will only monitor a single S3 bucke
                       :secret-key ""}
       :bucket        "blueshift-data"
       :key-pattern   ".*"
-      :poll-interval {:seconds 30}}
- :telemetry {:reporters [uswitch.blueshift.telemetry/log-metrics-reporter]}}
+      :poll-interval {:seconds 30}
+      :server-side-encryption "AES256"
+      :keep-s3-files-on-import true
+	}
+ :telemetry {:reporters [uswitch.blueshift.telemetry/log-metrics-reporter]}
+ :redshift-connections [{:dw1 {:jdbc-url "jdbc:postgresql://foo.eu-west-1.redshift.amazonaws.com:5439/db?tcpKeepAlive=true&user=user&password=pwd"}}
+                        {:dw2 {:jdbc-url "jdbc:postgresql://blahblah.us-east-1.redshift.amazonaws.com:5439/db?tcpKeepAlive=true&user=user&password=pwd"}} ]
+}
 ```
 
 The S3 credentials are shared by Blueshift for watching for new files and for [Redshift's `COPY` command](http://docs.aws.amazon.com/redshift/latest/dg/t_loading-tables-from-s3.html). The `:key-pattern` option is used to filter for specific keys (so you can have a single bucket with data from different environments, systems etc.).
+
+The :redshift-connections key contains a vector of database keys with maps pointing to redshift jdbc urls.  If the manifest in the s3 bucket contains a :database key with a value keyword matching a key in the :redshift-connections vector, that will allow Blueshift to lookup the jdbc-url from the specified database key.  In the above example, :dw1 would match with :database :dw1 in the manifest file.
+
 
 ### Building & Running
 
@@ -64,7 +73,7 @@ and the `manifest.edn` could look like this:
     {:table        "testing"
      :pk-columns   ["foo"]
      :columns      ["foo" "bar"]
-     :jdbc-url     "jdbc:postgresql://foo.eu-west-1.redshift.amazonaws.com:5439/db?tcpKeepAlive=true&user=user&password=pwd"
+     :database     :dw1
      :options      ["DELIMITER '\\t'" "IGNOREHEADER 1" "ESCAPE" "TRIMBLANKS"]
      :data-pattern ".*tsv$"}
 

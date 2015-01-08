@@ -5,7 +5,8 @@
             [clojure.core.async :refer (chan close! thread alts!! timeout)]
             [clojure.tools.cli :refer (parse-opts)])
   (:import [java.util UUID]
-           [java.sql DriverManager SQLException]))
+           [java.sql DriverManager SQLException])
+  (:gen-class))
 
 ;; pgsql driver isn't loaded automatically from classpath
 

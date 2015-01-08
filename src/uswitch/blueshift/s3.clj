@@ -9,15 +9,19 @@
             [schema.core :as s]
             [metrics.counters :refer (counter inc! dec!)]
             [metrics.timers :refer (timer time!)]
-            [uswitch.blueshift.redshift :as redshift])
+            [uswitch.blueshift.redshift :as redshift]
+            [clojure.pprint :refer (pprint)]
+            )        
   (:import [java.io PushbackReader InputStreamReader]
            [org.apache.http.conn ConnectionPoolTimeoutException]))
 
-(defrecord Manifest [table pk-columns columns jdbc-url options data-pattern strategy])
+(defrecord Manifest [table pk-columns columns jdbc-url options data-pattern strategy database])
+
 
 (def ManifestSchema {:table        s/Str
                      :pk-columns   [s/Str]
                      :columns      [s/Str]
+                     :database     s/Keyword   ;; Value of :database key will provide for runtime assoc of :jdbc-url
                      :jdbc-url     s/Str
                      :strategy     s/Str
                      :options      s/Any
@@ -68,26 +72,50 @@
     (assoc record key value)
     record))
 
-(defn manifest [credentials bucket files]
+  
+(defn get-jdbc-url [manifest redshift-connections-map]
+  (first
+   (remove #(nil? %)
+           (map (fn [m]
+                  (let [k (first (keys m))]
+                    (if (= k (:database manifest) )
+                      (get-in m [k :jdbc-url]))))
+                redshift-connections-map))))
+
+  
+(defn manifest [credentials bucket files redshift-connections-map]
   (letfn [(manifest? [{:keys [key]}]
             (re-matches #".*manifest\.edn$" key))]
     (when-let [manifest-file-key (:key (first (filter manifest? files)))]
-      (with-open [content (:content (get-object credentials bucket manifest-file-key))]
-        (-> (read-edn content)
-            (map->Manifest)
-            (assoc-if-nil :strategy "merge")
-            (update-in [:data-pattern] re-pattern))))))
+      (with-open [content (:content (get-object credentials bucket manifest-file-key))]        
+        (let [mani (-> (read-edn content)
+                       (map->Manifest)
+                       (assoc-if-nil :strategy "merge")
+                       (update-in [:data-pattern] re-pattern))
+              manifest-db-kw (:database mani)
+              jdbc-url (get-jdbc-url mani redshift-connections-map)
+              ]
+          (assoc-if-nil mani :jdbc-url jdbc-url) 
+          )))))
+
+
+ 
+
 
 (defn- step-scan
-  [credentials bucket directory]
+  [credentials bucket directory redshift-connections-map]
+  (debug "Calling uswitch.blueshift.redshift/step-scan for bucket " bucket " and directory " directory )
   (try
     (let [fs (files credentials bucket directory)]
-      (if-let [manifest (manifest credentials bucket fs)]
+      (if-let [manifest (manifest credentials bucket fs redshift-connections-map)]
         (do
+          (info (str "about to validate the manifest: " (pr-str manifest)))
           (validate manifest)
+          (info (str "done validating manifest for bucket " bucket ))
           (let [data-files  (filter (fn [{:keys [key]}]
                                       (re-matches (:data-pattern manifest) key))
                                     fs)]
+            (info (str "There were " (count data-files) " matching the :data-pattern in the manifest in dir " directory ))
             (if (seq data-files)
               (do
                 (info "Watcher triggering import" (:table manifest))
@@ -109,9 +137,9 @@
 (def import-timer (timer [(str *ns*) "importing-files" "time"]))
 
 (defn- step-load
-  [credentials bucket table-manifest files]
+  [credentials bucket table-manifest files server-side-encryption]
   (let [redshift-manifest  (redshift/manifest bucket files)
-        {:keys [key url]}  (redshift/put-manifest credentials bucket redshift-manifest)]
+        {:keys [key url]}  (redshift/put-manifest credentials bucket redshift-manifest server-side-encryption )]
 
     (info "Importing" (count files) "data files to table" (:table table-manifest) "from manifest" url)
     (debug "Importing Redshift Manifest" redshift-manifest)
@@ -124,14 +152,15 @@
          {:state :delete
           :files files}
          (catch java.sql.SQLException e
-           (error e "Error loading into" (:table table-manifest))
+           (error e "Error loading into table" (:table table-manifest))
            (error (:table table-manifest) "Redshift manifest content:" redshift-manifest)
-           (delete-object credentials bucket key)
+           (delete-object credentials bucket key)  ;; deletes the redshift manifest file it had just created.
            (dec! importing-files (count files))
            {:state :scan
             :pause? true}))))
 
 (defn- step-delete
+  "Deletes file objects from an S3 bucket. Make sure you want to do this!"
   [credentials bucket files]
   (do
     (doseq [key files]
@@ -144,18 +173,28 @@
 
 (defn- progress
   [{:keys [state] :as world}
-   {:keys [credentials bucket directory] :as configuration}]
+   {:keys [credentials bucket directory redshift-connections-map server-side-encryption keep-s3-files-on-import] :as configuration}]
+  (info (str "Progress state is " state))
   (case state
-    :scan   (step-scan   credentials bucket directory )
-    :load   (step-load   credentials bucket           (:table-manifest world) (:files world))
-    :delete (step-delete credentials bucket           (:files world))))
+    :scan   (step-scan   credentials bucket directory redshift-connections-map)
+    :load   (step-load   credentials bucket           (:table-manifest world) (:files world) server-side-encryption) 
+    ;; :delete (step-delete credentials bucket           (:files world))
+    :delete (if (not= true keep-s3-files-on-import)
+              (do
+                (warn (str "Will not delete existing s3 files in bucket" bucket ", because config :keep-files-on-import is set to " (get world :keep-files-on-import)))
+                (step-delete credentials bucket           (:files world))
+                )
+              )
+    ))
 
-(defrecord KeyWatcher [credentials bucket directory poll-interval-seconds]
+(defrecord KeyWatcher [credentials bucket directory poll-interval-seconds redshift-connections-map server-side-encryption keep-s3-files-on-import]
   Lifecycle
   (start [this]
     (info "Starting KeyWatcher for" (str bucket "/" directory) "polling every" poll-interval-seconds "seconds")
     (let [control-ch    (chan)
-          configuration {:credentials credentials :bucket bucket :directory directory}]
+          configuration {:credentials credentials :bucket bucket :directory directory 
+                         :redshift-connections-map redshift-connections-map :server-side-encryption server-side-encryption
+                         :keep-s3-files-on-import keep-s3-files-on-import}]
       (thread
        (loop [timer (timeout (* poll-interval-seconds 1000))
               world {:state :scan}]
@@ -171,8 +210,8 @@
     (close-channels this :watcher-control-ch)))
 
 
-(defn spawn-key-watcher! [credentials bucket directory poll-interval-seconds]
-  (start (KeyWatcher. credentials bucket directory poll-interval-seconds)))
+(defn spawn-key-watcher! [credentials bucket directory poll-interval-seconds redshift-connections-map server-side-encryption keep-s3-files-on-import]
+  (start (KeyWatcher. credentials bucket directory poll-interval-seconds redshift-connections-map server-side-encryption keep-s3-files-on-import)))
 
 (def directories-watched (counter [(str *ns*) "directories-watched" "directories"]))
 
@@ -180,12 +219,14 @@
   Lifecycle
   (start [this]
     (info "Starting KeyWatcherSpawner")
-    (let [{:keys [new-directories-ch bucket credentials]} bucket-watcher
+    (let [{:keys [new-directories-ch bucket credentials redshift-connections-map 
+                  server-side-encryption keep-s3-files-on-import]} bucket-watcher
           watchers (atom nil)]
       (go-loop [dirs (<! new-directories-ch)]
         (when dirs
           (doseq [dir dirs]
-            (swap! watchers conj (spawn-key-watcher! credentials bucket dir poll-interval-seconds))
+            (swap! watchers conj (spawn-key-watcher! credentials bucket dir poll-interval-seconds 
+                                                     redshift-connections-map server-side-encryption keep-s3-files-on-import))
             (inc! directories-watched))
           (recur (<! new-directories-ch))))
       (assoc this :watchers watchers)))
@@ -209,7 +250,8 @@
          (errorf e "Error checking for matching object keys in \"%s\"" bucket)
          #{})))
 
-(defrecord BucketWatcher [credentials bucket key-pattern poll-interval-seconds]
+(defrecord BucketWatcher [credentials bucket key-pattern poll-interval-seconds 
+                          redshift-connections-map server-side-encryption keep-s3-files-on-import]
   Lifecycle
   (start [this]
     (info "Starting BucketWatcher. Polling" bucket "every" poll-interval-seconds "seconds for keys matching" key-pattern)
@@ -235,7 +277,10 @@
   [config]
   (map->BucketWatcher {:credentials (-> config :s3 :credentials)
                        :bucket (-> config :s3 :bucket)
+                       :redshift-connections-map (-> config :redshift-connections)
                        :poll-interval-seconds (-> config :s3 :poll-interval :seconds)
+                       :keep-s3-files-on-import (-> config :s3 :keep-s3-files-on-import)
+                       :server-side-encryption (or (-> config :s3 :server-side-encryption) nil)
                        :key-pattern (or (re-pattern (-> config :s3 :key-pattern))
                                         #".*")}))
 
@@ -259,3 +304,4 @@
   (system-map :bucket-watcher (bucket-watcher config)
               :key-watcher-spawner (using (key-watcher-spawner config)
                                           [:bucket-watcher])))
+;; (bucket-watcher config)

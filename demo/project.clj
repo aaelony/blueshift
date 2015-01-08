@@ -16,5 +16,7 @@
              "-Dorg.slf4j.simpleLogger.log.org.apache.http=info"
              "-Dorg.slf4j.simpleLogger.log.com.amazonaws=info"
              "-Dorg.slf4j.simpleLogger.log.com.codahale=debug"]
-  :profiles {:dev {:source-paths ["./dev"]}}
+  :profiles {:dev {:source-paths ["./dev"]} }
+  :aot :all
+                       
   :main demo.core)
