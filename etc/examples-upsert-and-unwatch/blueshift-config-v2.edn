@@ -4,7 +4,6 @@
       :key-pattern   ".*"
       :poll-interval {:seconds 30}
       :server-side-encryption "AES256"
-      :keep-s3-files-on-import true
       }
  :telemetry {:reporters [uswitch.blueshift.telemetry/log-metrics-reporter]}
  :redshift-connections [{:dw1 {:jdbc-url "jdbc:postgresql://foobar...."}}

@@ -10,7 +10,6 @@
             [metrics.counters :refer (counter inc! dec!)]
             [metrics.timers :refer (timer time!)]
             [uswitch.blueshift.redshift :as redshift]
-            [clojure.pprint :refer (pprint)]
             )        
   (:import [java.io PushbackReader InputStreamReader]
            [org.apache.http.conn ConnectionPoolTimeoutException]))
@@ -109,16 +108,16 @@
     (let [fs (files credentials bucket directory)]
       (if-let [manifest (manifest credentials bucket fs redshift-connections-map)]
         (do
-          (info (str "about to validate the manifest: " (pr-str manifest)))
+          (debug (str "about to validate the manifest: " (pr-str manifest)))
           (validate manifest)
-          (info (str "done validating manifest for bucket " bucket ))
+          (debug (str "done validating manifest for bucket " bucket ))
           (let [data-files  (filter (fn [{:keys [key]}]
                                       (re-matches (:data-pattern manifest) key))
                                     fs)]
             (info (str "There were " (count data-files) " matching the :data-pattern in the manifest in dir " directory ))
             (if (seq data-files)
               (do
-                (info "Watcher triggering import" (:table manifest))
+                (debug "Watcher triggering import" (:table manifest))
                 (debug "Triggering load:" load)
                 {:state :load, :table-manifest manifest, :files (map :key data-files)})
               {:state :scan, :pause? true})))
@@ -136,24 +135,30 @@
 (def importing-files (counter [(str *ns*) "importing-files" "files"]))
 (def import-timer (timer [(str *ns*) "importing-files" "time"]))
 
+
 (defn- step-load
   [credentials bucket table-manifest files server-side-encryption]
-  (let [redshift-manifest  (redshift/manifest bucket files)
-        {:keys [key url]}  (redshift/put-manifest credentials bucket redshift-manifest server-side-encryption )]
+  (let [redshift-manifest-contents  (redshift/manifest bucket files)
+        redshift-manifest-filename (->> (-> (str bucket "--" (first files))
+                                 (clojure.string/split #"/") 
+                                 butlast) 
+                             (interpose "--") (apply str) )
 
-    (info "Importing" (count files) "data files to table" (:table table-manifest) "from manifest" url)
-    (debug "Importing Redshift Manifest" redshift-manifest)
+        {:keys [key url]}  (redshift/put-manifest credentials bucket redshift-manifest-contents server-side-encryption redshift-manifest-filename)]
+
+    (info "Attempting to import " (count files) "data files to table" (:table table-manifest) "from redshift-manifest-contents" url)
+    (debug "Importing Redshift Manifest" redshift-manifest-contents)
     (inc! importing-files (count files))
     (try (time! import-timer
                 (redshift/load-table credentials url table-manifest))
          (info "Successfully imported" (count files) "files")
-         (delete-object credentials bucket key)
+         (delete-object credentials bucket key)  ;; delete the redshift manifest.
          (dec! importing-files (count files))
          {:state :delete
           :files files}
          (catch java.sql.SQLException e
            (error e "Error loading into table" (:table table-manifest))
-           (error (:table table-manifest) "Redshift manifest content:" redshift-manifest)
+           (error (:table table-manifest) "Redshift manifest content:" redshift-manifest-contents)
            (delete-object credentials bucket key)  ;; deletes the redshift manifest file it had just created.
            (dec! importing-files (count files))
            {:state :scan
@@ -174,7 +179,7 @@
 (defn- progress
   [{:keys [state] :as world}
    {:keys [credentials bucket directory redshift-connections-map server-side-encryption keep-s3-files-on-import] :as configuration}]
-  (info (str "Progress state is " state))
+  (debug (str "Progress state is " state))
   (case state
     :scan   (step-scan   credentials bucket directory redshift-connections-map)
     :load   (step-load   credentials bucket           (:table-manifest world) (:files world) server-side-encryption) 
@@ -190,7 +195,7 @@
 (defrecord KeyWatcher [credentials bucket directory poll-interval-seconds redshift-connections-map server-side-encryption keep-s3-files-on-import]
   Lifecycle
   (start [this]
-    (info "Starting KeyWatcher for" (str bucket "/" directory) "polling every" poll-interval-seconds "seconds")
+    (debug "Starting KeyWatcher for" (str bucket "/" directory) "polling every" poll-interval-seconds "seconds")
     (let [control-ch    (chan)
           configuration {:credentials credentials :bucket bucket :directory directory 
                          :redshift-connections-map redshift-connections-map :server-side-encryption server-side-encryption
@@ -206,7 +211,7 @@
              (recur timer next-world)))))
       (assoc this :watcher-control-ch control-ch)))
   (stop [this]
-    (info "Stopping KeyWatcher for" (str bucket "/" directory))
+    (debug "Stopping KeyWatcher for" (str bucket "/" directory))
     (close-channels this :watcher-control-ch)))
 
 
@@ -218,7 +223,7 @@
 (defrecord KeyWatcherSpawner [bucket-watcher poll-interval-seconds]
   Lifecycle
   (start [this]
-    (info "Starting KeyWatcherSpawner")
+    (debug "Starting KeyWatcherSpawner")
     (let [{:keys [new-directories-ch bucket credentials redshift-connections-map 
                   server-side-encryption keep-s3-files-on-import]} bucket-watcher
           watchers (atom nil)]
@@ -231,7 +236,7 @@
           (recur (<! new-directories-ch))))
       (assoc this :watchers watchers)))
   (stop [this]
-    (info "Stopping KeyWatcherSpawner")
+    (debug "Stopping KeyWatcherSpawner")
     (when-let [watchers (:watchers this)]
       (info "Stopping" (count @watchers) "watchers")
       (doseq [watcher @watchers]
@@ -254,7 +259,7 @@
                           redshift-connections-map server-side-encryption keep-s3-files-on-import]
   Lifecycle
   (start [this]
-    (info "Starting BucketWatcher. Polling" bucket "every" poll-interval-seconds "seconds for keys matching" key-pattern)
+    (debug "Starting BucketWatcher. Polling" bucket "every" poll-interval-seconds "seconds for keys matching" key-pattern)
     (let [new-directories-ch (chan)
           control-ch         (chan)]
       (thread
@@ -262,14 +267,14 @@
           (let [available-dirs (matching-directories credentials bucket key-pattern)
                 new-dirs       (difference available-dirs dirs)]
             (when (seq new-dirs)
-              (info "New directories:" new-dirs "spawning" (count new-dirs) "watchers")
+              (debug "New directories:" new-dirs "spawning" (count new-dirs) "watchers")
               (>!! new-directories-ch new-dirs))
             (let [[v c] (alts!! [(timeout (* 1000 poll-interval-seconds)) control-ch])]
               (when-not (= c control-ch)
                 (recur available-dirs))))))
       (assoc this :control-ch control-ch :new-directories-ch new-directories-ch)))
   (stop [this]
-    (info "Stopping BucketWatcher")
+    (debug "Stopping BucketWatcher")
     (close-channels this :control-ch :new-directories-ch)))
 
 (defn bucket-watcher

@@ -14,19 +14,21 @@
 
 
 (defn manifest [bucket files]
-  (info (str "Calling uswitch.blueshift.redshift/manifest " bucket " for files: " (prn-str files )))
+  (debug (str "Calling uswitch.blueshift.redshift/manifest " bucket " for files: " (prn-str files )))
   {:entries (for [f files] {:url (str "s3://" bucket "/" f)
                             :mandatory true})})
 
 (defn put-manifest
   "Uploads the manifest to S3 as JSON, returns the URL to the uploaded object.
    Manifest should be generated with uswitch.blueshift.redshift/manifest."
-  [credentials bucket manifest server-side-encryption]
-  (info (str "Calling uswitch.blueshift.redshift/put-manifest for bucket " bucket " manifest: " manifest ))
-  (let [file-name (str (UUID/randomUUID) ".manifest")
+  [credentials bucket manifest server-side-encryption redshift-manifest-filename]
+  (debug (str "Calling uswitch.blueshift.redshift/put-manifest for bucket " bucket " manifest: " manifest ))
+  (let [;;file-name (str (UUID/randomUUID) ".manifest")
+        file-name (str redshift-manifest-filename ".manifest")
         s3-url (str "s3://" bucket "/" file-name)
         options-map (if (not (nil? server-side-encryption))
                       {:server-side-encryption server-side-encryption} ) ]
+    (info (str "Redshift-manifest for " bucket " is " file-name ))
     ;;(put-object credentials bucket file-name (generate-string manifest) {:server-side-encryption "AES256"} )
     (put-object credentials bucket file-name (generate-string manifest) options-map )
     {:key file-name
@@ -40,7 +42,7 @@
 (Class/forName "org.postgresql.Driver")
 
 (defn connection [jdbc-url]
-  (info "Calling uswitch.blueshift.redshift/connection ")
+  (debug "Calling uswitch.blueshift.redshift/connection ")
   (doto (DriverManager/getConnection jdbc-url)
     (.setAutoCommit false)))
 
@@ -67,13 +69,13 @@
 
 
 (defn create-staging-table-stmt [target-table staging-table]
-  (info (str "Calling create-staging-table-stmt for " staging-table " (" target-table ")"))
+  (debug (str "Calling create-staging-table-stmt for " staging-table " (" target-table ")"))
   (prepare-statement (format "CREATE TEMPORARY TABLE %s (LIKE %s INCLUDING DEFAULTS)"
                              staging-table
                              target-table)))
 
 (defn copy-from-s3-stmt [table manifest-url {:keys [access-key secret-key] :as creds} {:keys [columns options] :as table-manifest}]
-  (info (str "calling uswitch.blueshift.redshift/copy-from-s3-stmt for table " table )) 
+  (debug (str "calling uswitch.blueshift.redshift/copy-from-s3-stmt for table " table )) 
   (prepare-statement (format "COPY %s (%s) FROM '%s' CREDENTIALS 'aws_access_key_id=%s;aws_secret_access_key=%s' %s manifest"
                              table
                              (s/join "," columns)
@@ -134,7 +136,7 @@
 
 (defn merge-table [credentials redshift-manifest-url {:keys [table jdbc-url pk-columns strategy] :as table-manifest}]
   (let [staging-table (str table "_staging")]
-    (info (str "Calling uswitch.blueshift.redshift/merge-table for " table " via " (jdbc-url-censor jdbc-url) ))
+    (debug (str "Calling uswitch.blueshift.redshift/merge-table for " table " via " (jdbc-url-censor jdbc-url) ))
     (mark! redshift-imports)
     (with-connection jdbc-url
       (execute (create-staging-table-stmt table staging-table)
@@ -159,7 +161,7 @@
                (drop-table-stmt staging-table)))))
 
 (defn load-table [credentials redshift-manifest-url {strategy :strategy :as table-manifest}]
-  (info (str "Calling uswitch.blueshift.redshift/load-table with " (keyword strategy) " using " redshift-manifest-url))
+  (debug (str "Calling uswitch.blueshift.redshift/load-table with " (keyword strategy) " using " redshift-manifest-url))
   (case (keyword strategy)
     :merge (merge-table credentials redshift-manifest-url table-manifest)
     :replace (replace-table credentials redshift-manifest-url table-manifest)

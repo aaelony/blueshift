@@ -1,0 +1,11 @@
+{:table "mydata_fact"
+ :pk-columns ["id" "blah"]
+ :columns ["id" "blah" "timestamp" ]
+ :database :dw1    ;; must match the config to resolve the jdbc-url
+ :options      ["DELIMITER '\\t'" "IGNOREHEADER 1" "GZIP" "TRIMBLANKS" "TRUNCATECOLUMNS"]
+ :data-pattern ".*blah.*.gz$"
+ :keep-data-pattern-files-on-import true
+ :keep-manifest-upon-import false
+ }
+
+
