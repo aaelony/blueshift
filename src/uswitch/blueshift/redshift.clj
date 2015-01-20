@@ -19,12 +19,12 @@
                             :mandatory true})})
 
 (defn put-manifest
-  "Uploads the manifest to S3 as JSON, returns the URL to the uploaded object.
+  "Uploads the Amazon Redshift manifest to S3 as JSON, returns the URL to the uploaded object.
    Manifest should be generated with uswitch.blueshift.redshift/manifest."
   [credentials bucket manifest server-side-encryption redshift-manifest-filename]
   (debug (str "Calling uswitch.blueshift.redshift/put-manifest for bucket " bucket " manifest: " manifest ))
   (let [;;file-name (str (UUID/randomUUID) ".manifest")
-        file-name (str redshift-manifest-filename ".manifest")
+        file-name (str redshift-manifest-filename "-" (UUID/randomUUID) ".manifest")
         s3-url (str "s3://" bucket "/" file-name)
         options-map (if (not (nil? server-side-encryption))
                       {:server-side-encryption server-side-encryption} ) ]
