@@ -44,9 +44,28 @@
 (defn connection [jdbc-url]
   (debug "Calling uswitch.blueshift.redshift/connection ")
   (doto (DriverManager/getConnection jdbc-url)
-    (.setAutoCommit false)))
+    (.setAutoCommit true))) ;; Setting setAutoCommit to true improves performance by mitigating savepoint rollback.
 
 (def ^{:dynamic true} *current-connection* nil)
+
+
+(defn make-staging-table-name [orig-table-name]
+  (let [MAX-REDSHIFT-TABLENAME-LENGTH 127
+        max-staging-tablename-length 100
+        prefix (str orig-table-name "_staging_" (clojure.string/replace (java.util.UUID/randomUUID) #"-" "_" ))
+        x (dec (- max-staging-tablename-length (count prefix)))
+        chars-avail (if (> x 0) x 1)
+        
+        staging-table-name (cond 
+                            (< 0 (count prefix) max-staging-tablename-length) prefix
+                            :else (subs prefix 0 (- max-staging-tablename-length chars-avail))
+                             )
+        ]
+    (info (str "Staging Table Name: " staging-table-name))
+    staging-table-name
+        ))
+;; (make-staging-table-name "this_is_a_very_very_long_table_name_here_that_is_really_really_quite_longish_longish_and_longer_than_reasonable_unreasonably_so")
+
 
 (defn prepare-statement
   [sql]
@@ -135,30 +154,43 @@
            (throw e)))))
 
 (defn merge-table [credentials redshift-manifest-url {:keys [table jdbc-url pk-columns strategy] :as table-manifest}]
-  (let [staging-table (str table "_staging")]
+  (let [staging-table (str table "_staging")
+        ;; TODO: staging-table (make-staging-table-name table)
+        ]
     (debug (str "Calling uswitch.blueshift.redshift/merge-table for " table " via " (jdbc-url-censor jdbc-url) ))
     (mark! redshift-imports)
     (with-connection jdbc-url
-      (execute (create-staging-table-stmt table staging-table)
+      (execute (prepare-statement (format "BEGIN TRANSACTION"))
+               (create-staging-table-stmt table staging-table)
                (copy-from-s3-stmt staging-table redshift-manifest-url credentials table-manifest)
                (delete-target-stmt table staging-table pk-columns)
                (insert-from-staging-stmt table staging-table)
-               (drop-table-stmt staging-table)))))
+               (drop-table-stmt staging-table)
+               (prepare-statement (format "END TRANSACTION"))
+      ))))
 
 (defn replace-table [credentials redshift-manifest-url {:keys [table jdbc-url pk-columns strategy] :as table-manifest}]
   (mark! redshift-imports)
   (with-connection jdbc-url
-    (execute (truncate-table-stmt table)
-             (copy-from-s3-stmt table redshift-manifest-url credentials table-manifest))))
+    (execute (prepare-statement (format "BEGIN TRANSACTION"))
+             (truncate-table-stmt table)
+             (copy-from-s3-stmt table redshift-manifest-url credentials table-manifest)
+             (prepare-statement (format "END TRANSACTION"))
+             )))
 
 (defn append-table [credentials redshift-manifest-url {:keys [table jdbc-url pk-columns strategy] :as table-manifest}]
-  (let [staging-table (str table "_staging")]
+  (let [staging-table (str table "_staging")
+        ;; TODO: staging-table (make-staging-table-name table)
+        ]
     (mark! redshift-imports)
     (with-connection jdbc-url
-      (execute (create-staging-table-stmt table staging-table)
+      (execute (prepare-statement (format "BEGIN TRANSACTION"))
+               (create-staging-table-stmt table staging-table)
                (copy-from-s3-stmt staging-table redshift-manifest-url credentials table-manifest)
                (append-from-staging-stmt table staging-table pk-columns)
-               (drop-table-stmt staging-table)))))
+               (drop-table-stmt staging-table)
+               (prepare-statement (format "END TRANSACTION"))
+      ))))
 
 (defn load-table [credentials redshift-manifest-url {strategy :strategy :as table-manifest}]
   (debug (str "Calling uswitch.blueshift.redshift/load-table with " (keyword strategy) " using " redshift-manifest-url))
