@@ -1,9 +1,9 @@
-(defproject blueshift "0.1.3-SNAPSHOT-aa"
+(defproject blueshift "0.1.3-SNAPSHOT-aa3"
   :description "Automate importing S3 data into Amazon Redshift"
   :url "https://github.com/uswitch/blueshift"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
-  :dependencies [[org.clojure/clojure "1.6.0"]
+  :dependencies [[org.clojure/clojure "1.8.0"]
                  [org.clojure/tools.logging "0.2.6"]
                  [com.stuartsierra/component "0.2.1"]
                  [org.clojure/core.async "0.1.303.0-886421-alpha"]
@@ -14,9 +14,15 @@
                  [org.slf4j/jcl-over-slf4j "1.7.7"]
                  [cheshire "5.3.1"]
                  [postgresql "8.0-318.jdbc3"]
+                 ;;[alandipert/redshift-driver "1.1.13-SNAPSHOT"]
+                 ;; [com.amazonaws/aws-java-sdk-redshift "1.11.118"]
+                 [org.clojure/java.jdbc "0.7.0-alpha3"]
+                 [redshift/jdbc "42.1.2.1.1001"]
+
                  [prismatic/schema "0.2.2"]
                  [metrics-clojure "2.0.2"]
                  [com.codahale.metrics/metrics-jvm "3.0.2"]]
+  :plugins [[lein-localrepo "0.5.3"]]
   :profiles {:dev {:dependencies [[org.slf4j/slf4j-simple "1.7.7"]
                                   [org.clojure/tools.namespace "0.2.3"]]
                    :source-paths ["./dev"]

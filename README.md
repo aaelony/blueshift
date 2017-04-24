@@ -1,5 +1,6 @@
 # Blueshift
 
+
 Service to watch Amazon S3 and automate the load into Amazon Redshift.
 
 ![Gravitational Blueshift](http://upload.wikimedia.org/wikipedia/commons/5/5c/Gravitional_well.jpg) ([Image used under CC Attribution Share-Alike License](http://en.wikipedia.org/wiki/File:Gravitional_well.jpg)).
@@ -13,6 +14,10 @@ Service to watch Amazon S3 and automate the load into Amazon Redshift.
 Importing to Redshift now requires just the ability to write files to S3.
 
 ## Using
+
+### Redshift driver
+lein localrepo install drivers/RedshiftJDBC42-1.2.1.1001.jar redshift/jdbc "42.1.2.1.1001"
+
 
 ### Configuring
 

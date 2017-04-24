@@ -107,27 +107,27 @@
           (assoc-if-nil mani :jdbc-url jdbc-url) 
           )))))
 
- 
-
-
 (defn- step-scan
   [credentials bucket directory redshift-connections-map]
-  (debug "Calling uswitch.blueshift.redshift/step-scan for bucket " bucket " and directory " directory )
+  (info "Calling uswitch.blueshift.redshift/step-scan for bucket " bucket " and directory " directory )
   (try
     (let [fs (files credentials bucket directory)]
       (if-let [blueshift-manifest (manifest credentials bucket fs redshift-connections-map)]
         (do
+          (info (str "Looking for matches in fs=" (into [] fs)))
           (info (str "about to validate the blueshift manifest from " bucket "/" directory ": " (pr-str blueshift-manifest)))
           (validate blueshift-manifest)
-          (debug (str "done validating blueshift manifest for bucket " bucket ))
+          (info (str "done validating blueshift manifest for bucket " bucket ))
           (let [data-files  (filter (fn [{:keys [key]}]
-                                      (re-matches (:data-pattern blueshift-manifest) key))
+                                        ;;(info (str "Key: " key ", (:data-pattern blueshift-manifest) -->" (:data-pattern blueshift-manifest)  ))
+                                        (re-matches (:data-pattern blueshift-manifest) key)                                        
+                                      )
                                     fs)
                 ;; DONE: extract keep options from blueshift bucket manifest.
                 {:keys [keep-data-pattern-files-on-import keep-manifest-upon-import]} blueshift-manifest
                 ]
-            (debug (str "blueshift-manifest: " (pr-str blueshift-manifest)))
-            (debug (str "translated keys keep-data-pattern-files-on-import(" keep-data-pattern-files-on-import
+            (info (str "blueshift-manifest: " (pr-str blueshift-manifest)))
+            (info (str "translated keys keep-data-pattern-files-on-import(" keep-data-pattern-files-on-import
                          ") keep-manifest-upon-import(" keep-manifest-upon-import ")" ))
             (info (str "There were " (count data-files) " matching the :data-pattern in the blueshift manifest in dir " directory ))
             (if (seq data-files)
@@ -152,8 +152,10 @@
       (error e "Failed reading content of" (str bucket "/" directory))
       {:state :scan, :pause? true})))
 
+
 (def importing-files (counter [(str *ns*) "importing-files" "files"]))
 (def import-timer (timer [(str *ns*) "importing-files" "time"]))
+
 
 
 (defn- step-load
@@ -177,7 +179,7 @@
           "from redshift-manifest-contents" 
           url " in bucket " bucket ", directory " directory)
 
-    (debug "Importing Redshift Manifest" redshift-manifest-contents)
+    (info "Importing Redshift Manifest" redshift-manifest-contents)
     (inc! importing-files (count files))
     (try (time! import-timer
                 (redshift/load-table credentials url table-manifest))
@@ -203,7 +205,7 @@
            )
 
          (catch java.sql.SQLException e
-           (error e "Error loading into table" (:table table-manifest))
+           (error e (str "Error loading into table" (:table table-manifest) " cause:" (.toString e) ))
            (error (:table table-manifest) "Redshift manifest content:" redshift-manifest-contents)
            (delete-object credentials bucket key)  ;; deletes the redshift manifest file it had just created.
            (dec! importing-files (count files))
